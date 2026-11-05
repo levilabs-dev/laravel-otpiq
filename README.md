@@ -18,7 +18,10 @@ Maintained by **[Levi Labs](https://levilabs.dev)** — built by [Nizam Omer](ht
 - [Configuration](#configuration)
 - [Provider routing (`OTPIQ_DEFAULT_PROVIDER`)](#provider-routing-otpiq_default_provider)
 - [Multiple OTPIQ projects](#multiple-otpiq-projects)
+- [API reference coverage](#api-reference-coverage)
 - [Send messages](#send-messages)
+- [WhatsApp campaigns](#whatsapp-campaigns)
+- [Sender IDs, pricing & delivery reports](#sender-ids-pricing--delivery-reports)
 - [Track delivery](#track-delivery)
 - [Delivery webhooks](#delivery-webhooks)
 - [WhatsApp inbound webhooks](#whatsapp-inbound-webhooks)
@@ -146,6 +149,43 @@ OtpiqProject::info(project: 'default');
 
 If the project key is missing or has no `api_key`, the SDK throws `OtpiqProjectException`.
 
+## API reference coverage
+
+This package wraps the **REST API** documented at [docs.otpiq.com/api-reference/introduction](https://docs.otpiq.com/api-reference/introduction). Every endpoint listed in the official reference is supported:
+
+| Docs section | HTTP | OTPIQ path | Laravel facade / method |
+| --- | --- | --- | --- |
+| **Project** | | | |
+| Get Project Info | `GET` | `/info` | `OtpiqProject::info()` |
+| **Messaging & SMS** | | | |
+| Send SMS | `POST` | `/sms` | `OtpiqMessage::sendVerification()` · `sendCustom()` · `sendWhatsAppTemplate()` (same API, different `smsType` bodies) |
+| Track SMS | `GET` | `/sms/track/{smsId}` | `OtpiqMessage::track($smsId)` |
+| International SMS Pricing | `GET` | `/international-sms-pricing` | `OtpiqPricing::internationalSmsPricing()` |
+| **Sender ID** | | | |
+| Get Sender IDs | `GET` | `/sender-ids` | `OtpiqSenderId::list()` |
+| **Delivery reports** | | | |
+| Generate Delivery Report | `POST` | `/reports/generate` | `OtpiqReport::generate($start, $end, …)` |
+| List Delivery Reports | `GET` | `/reports` | `OtpiqReport::list()` |
+| **WhatsApp** | | | |
+| List WhatsApp Resources | `GET` | `/whatsapp/resources` | `OtpiqWhatsApp::list()` |
+| **WhatsApp campaigns** | | | [`OtpiqWhatsAppCampaign` facade](#whatsapp-campaigns) |
+| Create Campaign | `POST` | `/whatsapp/campaigns` | `OtpiqWhatsAppCampaign::create([…])` |
+| Get Recipient Schema | `GET` | `/whatsapp/campaigns/recipient-payload` | `OtpiqWhatsAppCampaign::recipientPayload()` |
+| Attach Recipients | `POST` | `/whatsapp/campaigns/{id}/recipients` | `OtpiqWhatsAppCampaign::attachRecipients($id, […])` |
+| Send Sample | `POST` | `/whatsapp/campaigns/{id}/sample` | `OtpiqWhatsAppCampaign::sendSample($id, […])` |
+| Start Campaign | `POST` | `/whatsapp/campaigns/{id}/start` | `OtpiqWhatsAppCampaign::start($id)` |
+| List Campaigns | `GET` | `/whatsapp/campaigns` | `OtpiqWhatsAppCampaign::list()` |
+| Get Campaign Details | `GET` | `/whatsapp/campaigns/{id}` | `OtpiqWhatsAppCampaign::get($id)` |
+| Update Campaign | `PATCH` | `/whatsapp/campaigns/{id}` | `OtpiqWhatsAppCampaign::update($id, […])` |
+| Delete Campaign | `DELETE` | `/whatsapp/campaigns/{id}` | `OtpiqWhatsAppCampaign::delete($id)` |
+
+**Not HTTP endpoints (documented separately):**
+
+- **SMS delivery webhooks** — configured on each send via `deliveryReport` or `OTPIQ_WEBHOOK_*`; handled in your app with `DeliveryWebhook` ([how webhooks work](https://docs.otpiq.com/essentials/how-webhook-works.md)).
+- **WhatsApp inbound webhooks** — configured in the OTPIQ dashboard; verify with `WhatsAppInboundWebhookVerifier` ([WhatsApp webhook](https://docs.otpiq.com/whatsapp-business-api/whatsapp-webhook.md)).
+
+Aliases in `composer.json`: `OtpiqWhatsAppCampaign` → `LeviLabs\LaravelOtpiq\Facades\OtpiqWhatsAppCampaign`.
+
 ## Send messages
 
 ### Verification OTP (most common)
@@ -194,7 +234,74 @@ OtpiqMessage::sendWhatsAppTemplate(new SendWhatsAppTemplateData(
 ));
 ```
 
-List connected WhatsApp assets with `OtpiqWhatsApp::list()`.
+List connected WhatsApp assets with `OtpiqWhatsApp::list()` (maps to **List WhatsApp Resources** in the API docs).
+
+## WhatsApp campaigns
+
+Bulk template messaging uses the **WhatsApp Campaigns** API ([campaign docs](https://docs.otpiq.com/api-reference/whatsapp/campaigns/create)). Use the **`OtpiqWhatsAppCampaign`** facade (not `OtpiqMessage`).
+
+Typical flow:
+
+1. **Resources** — `OtpiqWhatsApp::list()` for `templateId`, `phoneNumberId`, etc.
+2. **Recipient schema** — `OtpiqWhatsAppCampaign::recipientPayload(templateId: '…')` or `recipientPayload(campaignId: '…')`.
+3. **Create** — `create()` with `name`, `templateId`, `phoneNumberId`, `scheduleType` (`now` or `schedule`).
+4. **Attach recipients** — `attachRecipients($campaignId, ['recipients' => […]])`.
+5. **Start** — `start($campaignId)` (for `scheduleType: now` drafts). Scheduled campaigns start automatically at `scheduledFor`.
+
+```php
+use LeviLabs\LaravelOtpiq\Facades\OtpiqWhatsApp;
+use LeviLabs\LaravelOtpiq\Facades\OtpiqWhatsAppCampaign;
+
+$resources = OtpiqWhatsApp::list();
+
+$campaign = OtpiqWhatsAppCampaign::create([
+    'name' => 'Summer promo',
+    'templateId' => '664abc123def456789012345',
+    'phoneNumberId' => '664def456abc789012345678',
+    'scheduleType' => 'now',
+]);
+
+$id = $campaign['_id']; // MongoDB id from API
+
+$schema = OtpiqWhatsAppCampaign::recipientPayload(templateId: '664abc123def456789012345');
+
+OtpiqWhatsAppCampaign::attachRecipients($id, [
+    'recipients' => [
+        // shape must match $schema['exampleRecipient'] / fields from recipient-payload
+    ],
+]);
+
+OtpiqWhatsAppCampaign::start($id);
+
+// Optional: test before full send
+OtpiqWhatsAppCampaign::sendSample($id, ['recipients' => [/* … */]]);
+
+// Monitor
+OtpiqWhatsAppCampaign::list(status: 'running');
+OtpiqWhatsAppCampaign::get($id, page: 1, limit: 20);
+```
+
+Other campaign methods: **`update($id, …)`** (draft/scheduled only), **`delete($id)`** (draft/scheduled only). Pass `?string $project = null` as the last argument on any call for multi-project setups.
+
+## Sender IDs, pricing & delivery reports
+
+```php
+use LeviLabs\LaravelOtpiq\Facades\OtpiqPricing;
+use LeviLabs\LaravelOtpiq\Facades\OtpiqReport;
+use LeviLabs\LaravelOtpiq\Facades\OtpiqSenderId;
+
+$senderIds = OtpiqSenderId::list();
+
+$pricing = OtpiqPricing::internationalSmsPricing(page: 1, limit: 100, countryIso: 'IQ');
+
+$reports = OtpiqReport::list(limit: 50, statuses: ['available']);
+
+$newReport = OtpiqReport::generate(
+    '2026-01-01T00:00:00.000Z',
+    '2026-01-31T23:59:59.999Z',
+);
+// $newReport['downloadUrl'] — CSV download link from OTPIQ
+```
 
 ## Track delivery
 
@@ -245,17 +352,17 @@ Separate from SMS **delivery** webhooks. Configure per phone number in the OTPIQ
 
 ## Facades & services
 
-| Facade | Purpose |
-| --- | --- |
-| `OtpiqProject` | Project info & credit (`GET /info`) |
-| `OtpiqMessage` | Send (verification / custom / WhatsApp template) & track |
-| `OtpiqSenderId` | List registered sender IDs |
-| `OtpiqPricing` | International SMS pricing (paginated) |
-| `OtpiqReport` | List & generate CSV delivery reports |
-| `OtpiqWhatsApp` | Connected businesses, numbers, templates |
-| `OtpiqWhatsAppCampaign` | Create campaigns, attach recipients, start, sample send |
+| Facade | Contract | Covers |
+| --- | --- | --- |
+| `OtpiqProject` | `OtpiqProjectServiceContract` | Project info |
+| `OtpiqMessage` | `OtpiqMessagingServiceContract` | Send SMS API + track |
+| `OtpiqSenderId` | `OtpiqSenderIdServiceContract` | Sender IDs |
+| `OtpiqPricing` | `OtpiqPricingServiceContract` | International SMS pricing |
+| `OtpiqReport` | `OtpiqReportServiceContract` | Delivery report CSVs |
+| `OtpiqWhatsApp` | `OtpiqWhatsAppResourceServiceContract` | WhatsApp resources |
+| `OtpiqWhatsAppCampaign` | `OtpiqWhatsAppCampaignServiceContract` | **All 10 campaign endpoints** |
 
-Resolve contracts from the container if you prefer constructor injection (e.g. `OtpiqMessagingServiceContract`).
+Resolve contracts from the container if you prefer constructor injection.
 
 ## Persistence & sync
 
