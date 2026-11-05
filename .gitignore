@@ -2,6 +2,8 @@
 /build
 composer.lock
 .phpunit.result.cache
+.phpunit.cache
+.pest.xml
 .DS_Store
 .idea
 .vscode
